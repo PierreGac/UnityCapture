@@ -12,6 +12,7 @@ improvements. It supports lag-free 1080p at 60 FPS on moderate PCs and can handl
 It also supports capturing multiple cameras and alpha channel (transparency) in receiving applications that
 support it (like [OBS](https://obsproject.com/)).
 
+This fork focuses on OpenGL compatibility and other small improvements
 
 ## Installation
 
@@ -135,6 +136,25 @@ You can check the Unity profiler for how much it impacts performance in your pro
 
 Otherwise it is recommended to leave scaling and mirroring disabled in the UnityCapture component.
 
+
+## Fork changes
+
+The DLL can now stream OpenGL (tested Core). For OpenGLES we 'just' need to use glReadPixels instead of glGetTexImage.
+It apprears that with OpenGL we don't need to care about the format. HDR, Gamma/Linear still work with GL_RGBA and GL_UNSIGNED_BYTE
+
+In order to make OpenGL compatibility works, the DLL methods are now called inside a coroutine by the `GL.IssuePluginEvent();`
+because the calls were made outside glBegin()<---->glEnd()
+
+Tested on Windows10 x64, NV710M, i5 3337U 1.8GHz
+
+### Issues/Todo
+
+- The double buffering system is not implemented in the OpenGL part.
+- The OpenGL need more testing on several machines/setups
+- Add DirectX12 ?
+- Add Metal ?
+- Add OpenGLCore => Issues with missing methods like `glBindFramebuffer` for mobile platforms
+- Need testing on Linux
 
 ## Todo
 
