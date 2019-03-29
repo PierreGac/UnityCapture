@@ -151,7 +151,8 @@ MonoBehaviour:
   DoubleBuffering: 1
   EnableVSync: 0
   TargetFrameRate: 60
-  HideWarnings: 0
+  HideWarnings: 1
+  _runOnStart: 1
 --- !u!81 &1126630851
 AudioListener:
   m_ObjectHideFlags: 0

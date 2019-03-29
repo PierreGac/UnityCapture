@@ -50,16 +50,56 @@ public class UnityCapture : MonoBehaviour
         ERROR_INVALIDCAPTUREINSTANCEPTR = 200
     };
 
-    [SerializeField] [Tooltip("Capture device index")] public ECaptureDevice CaptureDevice = ECaptureDevice.CaptureDevice1;
-    [SerializeField] [Tooltip("Scale image if Unity and capture resolution don't match (can introduce frame dropping, not recommended)")] public EResizeMode ResizeMode = EResizeMode.Disabled;
-    [SerializeField] [Tooltip("How many milliseconds to wait for a new frame until sending is considered to be stopped")] public int Timeout = 1000;
-    [SerializeField] [Tooltip("Mirror captured output image")] public EMirrorMode MirrorMode = EMirrorMode.Disabled;
-    [SerializeField] [Tooltip("Introduce a frame of latency in favor of frame rate")] public bool DoubleBuffering = false;
-    [SerializeField] [Tooltip("Check to enable VSync during capturing")] public bool EnableVSync = false;
-    [SerializeField] [Tooltip("Set the desired render target frame rate")] public int TargetFrameRate = 60;
-    [SerializeField] [Tooltip("Check to disable output of warnings")] public bool HideWarnings = false;
+    [Tooltip("Capture device index")] public ECaptureDevice CaptureDevice = ECaptureDevice.CaptureDevice1;
+    [Tooltip("Scale image if Unity and capture resolution don't match (can introduce frame dropping, not recommended)")] public EResizeMode ResizeMode = EResizeMode.Disabled;
+    [Tooltip("How many milliseconds to wait for a new frame until sending is considered to be stopped")] public int Timeout = 1000;
+    [Tooltip("Mirror captured output image")] public EMirrorMode MirrorMode = EMirrorMode.Disabled;
+    [Tooltip("Introduce a frame of latency in favor of frame rate")] public bool DoubleBuffering = false;
+    [Tooltip("Check to enable VSync during capturing")] public bool EnableVSync = false;
+    [Tooltip("Set the desired render target frame rate")] public int TargetFrameRate = 60;
+    [Tooltip("Check to disable output of warnings")] public bool HideWarnings = false;
 
     Interface CaptureInterface;
+
+    [SerializeField]
+    private bool _runOnStart = true;
+
+
+    private bool _active = false;
+    public bool active
+    {
+        get
+        {
+            return _active;
+        }
+        set
+        {
+            if (_active != value)
+            {
+                if(CaptureInterface != null)
+                {
+                    CaptureInterface.active = value;
+                }
+                if (_active)
+                {
+                    _active = false;
+                    if (CaptureInterface != null)
+                    {
+                        StopCoroutine(CaptureInterface.CallPluginAtEndOfFrames());
+                    }
+                }
+                else
+                {
+                    _active = true;
+                    if (CaptureInterface != null)
+                    {
+                        StartCoroutine(CaptureInterface.CallPluginAtEndOfFrames());
+                    }
+                }
+                _active = value;
+            }
+        }
+    }
 
     void Awake()
     {
@@ -74,13 +114,24 @@ public class UnityCapture : MonoBehaviour
     }
 
 
-    IEnumerator Start()
+    void Start()
     {
         CaptureInterface = new Interface(CaptureDevice);
-
-        yield return StartCoroutine(CaptureInterface.CallPluginAtEndOfFrames());
-
+        if (_runOnStart)
+        {
+            active = true;
+        }
     }
+
+#if UNITY_EDITOR
+    private void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.Space))
+        {
+            active = !active;
+        }
+    }
+#endif
 
     void OnDestroy()
     {
@@ -91,24 +142,27 @@ public class UnityCapture : MonoBehaviour
     {
         Graphics.Blit(source, destination);
 
-        // This method is always called, in case of an unespected error, it may help to fall back in a working situation
-        // Another idea should be to start the recording process manually and call this method only one (when the result is RET_SUCCESS) and never call it again
-        CaptureInterface.SetTexture(source, Timeout, DoubleBuffering, ResizeMode, MirrorMode);
-        ECaptureSendResult result = CaptureInterface.LastResult(); // Retreiving back the result
-        switch (result)
+        if (_active)
         {
-            case ECaptureSendResult.SUCCESS: break;
-            case ECaptureSendResult.WARNING_FRAMESKIP: if (!HideWarnings) Debug.LogWarning("[UnityCapture] Capture device did skip a frame read, capture frame rate will not match render frame rate."); break;
-            case ECaptureSendResult.WARNING_CAPTUREINACTIVE: if (!HideWarnings) Debug.LogWarning("[UnityCapture] Capture device is inactive"); break;
-            case ECaptureSendResult.ERROR_UNSUPPORTEDGRAPHICSDEVICE: Debug.LogError("[UnityCapture] Unsupported graphics device (only D3D11/GL/GLCORE/GLES supported)"); break;
-            case ECaptureSendResult.ERROR_PARAMETER: Debug.LogError("[UnityCapture] Input parameter error"); break;
-            case ECaptureSendResult.ERROR_TOOLARGERESOLUTION: Debug.LogError("[UnityCapture] Render resolution is too large to send to capture device"); break;
-            case ECaptureSendResult.ERROR_TEXTUREFORMAT: Debug.LogError("[UnityCapture] Render texture format is unsupported (only basic non-HDR (ARGB32) and HDR (FP16/ARGB Half) formats are supported)"); break;
-            case ECaptureSendResult.ERROR_READTEXTURE: Debug.LogError("[UnityCapture] Error while reading texture image data"); break;
-            case ECaptureSendResult.ERROR_READTEXTUREDATA: Debug.LogError("[UnityCapture] Error while reading texture buffer data"); break;
-            case ECaptureSendResult.ERROR_TEXTUREHANDLE: Debug.LogError("[UnityCapture] Texture handle error"); break;
-            case ECaptureSendResult.ERROR_INVALIDCAPTUREINSTANCEPTR: Debug.LogError("[UnityCapture] Invalid Capture Instance Pointer"); break;
-            default: Debug.LogErrorFormat("[UnityCapture] Another error occured: {0} (0x{1})", result, result.ToString("X")); break;
+            // This method is always called, in case of an unespected error, it may help to fall back in a working situation
+            // Another idea should be to start the recording process manually and call this method only one (when the result is RET_SUCCESS) and never call it again
+            CaptureInterface.SetTexture(source, Timeout, DoubleBuffering, ResizeMode, MirrorMode);
+            ECaptureSendResult result = CaptureInterface.LastResult(); // Retreiving back the result
+            switch (result)
+            {
+                case ECaptureSendResult.SUCCESS: break;
+                case ECaptureSendResult.WARNING_FRAMESKIP: if (!HideWarnings) Debug.LogWarning("[UnityCapture] Capture device did skip a frame read, capture frame rate will not match render frame rate."); break;
+                case ECaptureSendResult.WARNING_CAPTUREINACTIVE: if (!HideWarnings) Debug.LogWarning("[UnityCapture] Capture device is inactive"); break;
+                case ECaptureSendResult.ERROR_UNSUPPORTEDGRAPHICSDEVICE: Debug.LogError("[UnityCapture] Unsupported graphics device (only D3D11/GL/GLCORE/GLES supported)"); break;
+                case ECaptureSendResult.ERROR_PARAMETER: Debug.LogError("[UnityCapture] Input parameter error"); break;
+                case ECaptureSendResult.ERROR_TOOLARGERESOLUTION: Debug.LogError("[UnityCapture] Render resolution is too large to send to capture device"); break;
+                case ECaptureSendResult.ERROR_TEXTUREFORMAT: Debug.LogError("[UnityCapture] Render texture format is unsupported (only basic non-HDR (ARGB32) and HDR (FP16/ARGB Half) formats are supported)"); break;
+                case ECaptureSendResult.ERROR_READTEXTURE: Debug.LogError("[UnityCapture] Error while reading texture image data"); break;
+                case ECaptureSendResult.ERROR_READTEXTUREDATA: Debug.LogError("[UnityCapture] Error while reading texture buffer data"); break;
+                case ECaptureSendResult.ERROR_TEXTUREHANDLE: Debug.LogError("[UnityCapture] Texture handle error"); break;
+                case ECaptureSendResult.ERROR_INVALIDCAPTUREINSTANCEPTR: Debug.LogError("[UnityCapture] Invalid Capture Instance Pointer"); break;
+                default: Debug.LogErrorFormat("[UnityCapture] Another error occured: {0} (0x{1})", result, result.ToString("X")); break;
+            }
         }
     }
 
@@ -123,6 +177,8 @@ public class UnityCapture : MonoBehaviour
 
         System.IntPtr _cachedTexturePtr;
 
+        public bool active = false;
+
         public Interface(ECaptureDevice CaptureDevice)
         {
             CaptureInstance = CaptureCreateInstance((int)CaptureDevice);
@@ -135,7 +191,7 @@ public class UnityCapture : MonoBehaviour
 
         public IEnumerator CallPluginAtEndOfFrames()
         {
-            while (true) // TODO : Add an exit condition
+            while (active)
             {
                 yield return new WaitForEndOfFrame();
                 GL.IssuePluginEvent(GetRenderEventFunc(), 1);

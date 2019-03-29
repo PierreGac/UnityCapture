@@ -76,6 +76,30 @@ struct UnityCaptureInstance
 	unsigned char* gl_dataPtr;
 
 	int lastResult = RET_SUCCESS;
+
+	~UnityCaptureInstance()
+	{
+		if (Sender)
+		{
+			delete Sender;
+			Sender = NULL;
+		}
+		if (Textures[0])
+		{
+			Textures[0]->Release();
+			Textures[0] = NULL;
+		}
+		if (Textures[1])
+		{
+			Textures[1]->Release();
+			Textures[1] = NULL;
+		}
+		if (gl_dataPtr)
+		{
+			delete gl_dataPtr;
+			gl_dataPtr = NULL;
+		}
+	}
 };
 static UnityCaptureInstance* g_captureInstance = NULL;
 
@@ -90,10 +114,6 @@ extern "C" __declspec(dllexport) UnityCaptureInstance* CaptureCreateInstance(int
 extern "C" __declspec(dllexport) void CaptureDeleteInstance(UnityCaptureInstance* c)
 {
 	if (!c) return;
-	delete c->Sender;
-	if (c->Textures[0]) c->Textures[0]->Release();
-	if (c->Textures[1]) c->Textures[1]->Release();
-	if (c->gl_dataPtr) delete c->gl_dataPtr;
 	delete c;
 }
 
