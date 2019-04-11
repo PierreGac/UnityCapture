@@ -12,7 +12,9 @@ improvements. It supports lag-free 1080p at 60 FPS on moderate PCs and can handl
 It also supports capturing multiple cameras and alpha channel (transparency) in receiving applications that
 support it (like [OBS](https://obsproject.com/)).
 
-This fork focuses on OpenGL compatibility and other small improvements
+This fork adds the following changes:
+- Open GL support
+- Screenshot abilities \[D3D11 and OpenGL\]
 
 ## Installation
 
@@ -40,6 +42,16 @@ You should see the rendering output from Unity displayed in your target applicat
 
 If you see a message about matching rendering and display resolutions, use the resolution settings on
 the 'Game' tab in Unity to set a fixed resolution to match the capture output.
+
+
+## Setup the CapturePlugin project
+
+You will now need the following libraries:
+- [LibPNG](http://www.libpng.org/pub/png/libpng.html)
+- [Glew](https://sourceforge.net/projects/glew/)
+
+Make sure that the VisualStudio or other IDE is correctly setup wit those libs.
+In unity side, make sure that the glew32.dll file is present
 
 
 ## Setup in your Unity project
@@ -145,16 +157,13 @@ It apprears that with OpenGL we don't need to care about the format. HDR, Gamma/
 In order to make OpenGL compatibility works, the DLL methods are now called inside a coroutine by the `GL.IssuePluginEvent();`
 because the calls were made outside glBegin()<---->glEnd()
 
-Tested on Windows10 x64, NV710M, i5 3337U 1.8GHz
+Added screenshot abilities to the DLL, in order to efficiently take screenshots.
 
-### Issues/Todo
+### Known issues
 
 - The double buffering system is not implemented in the OpenGL part.
-- The OpenGL need more testing on several machines/setups
-- Add DirectX12 ?
-- Add Metal ?
-- Add OpenGLCore => Issues with missing methods like `glBindFramebuffer` for mobile platforms
-- Need testing on Linux
+- Unable to take DirectX screenshots with HDR on (16bits color depth)
+- OpenGL 16 + Linear color space is darker than it should be. Some correction like gamma may be required
 
 ## Todo
 
