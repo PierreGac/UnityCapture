@@ -27,6 +27,7 @@
 */
 
 using System.Collections;
+using System.IO;
 using UnityEngine;
 
 [RequireComponent(typeof(Camera))]
@@ -64,6 +65,9 @@ public class UnityCapture : MonoBehaviour
     [SerializeField]
     private bool _runOnStart = true;
 
+    private bool _requestScreenshot = false;
+    private RenderTexture _sourceTexture = null;
+    private string _requestedScreenshotFileName = "test.png";
 
     private bool _active = false;
     public bool active
@@ -76,7 +80,7 @@ public class UnityCapture : MonoBehaviour
         {
             if (_active != value)
             {
-                if(CaptureInterface != null)
+                if (CaptureInterface != null)
                 {
                     CaptureInterface.active = value;
                 }
@@ -130,8 +134,22 @@ public class UnityCapture : MonoBehaviour
         {
             active = !active;
         }
+        if (Input.GetKeyDown(KeyCode.T))
+        {
+            _requestScreenshot = true;
+        }
     }
 #endif
+
+    public void TakeScreenshot(string fileName)
+    {
+        DirectoryInfo dInfo = new DirectoryInfo(fileName);
+        if (Directory.Exists(dInfo.FullName))
+        {
+            _requestedScreenshotFileName = fileName;
+            _requestScreenshot = true;
+        }
+    }
 
     void OnDestroy()
     {
@@ -141,6 +159,18 @@ public class UnityCapture : MonoBehaviour
     void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
         Graphics.Blit(source, destination);
+
+        if (_sourceTexture == null)
+        {
+            _sourceTexture = source; // Assuming that the source texture reference will be the same...
+        }
+
+        if(_requestScreenshot)
+        {
+            CaptureInterface.SetTexture(source, Timeout, DoubleBuffering, ResizeMode, MirrorMode, _requestedScreenshotFileName);
+            _requestScreenshot = false;
+            StartCoroutine(CaptureInterface.TakeScreenshot());
+        }
 
         if (_active)
         {
@@ -172,6 +202,8 @@ public class UnityCapture : MonoBehaviour
         [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static ECaptureSendResult GetLastResult();
         [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static void CaptureDeleteInstance(System.IntPtr instance);
         [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static void SetTextureFromUnity(System.IntPtr instance, System.IntPtr nativetexture, int Timeout, bool UseDoubleBuffering, EResizeMode ResizeMode, EMirrorMode MirrorMode, bool IsLinearColorSpace, int width, int height);
+        [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static void PrepareScreenshot(System.IntPtr instance, System.IntPtr nativetexture, int Timeout, bool UseDoubleBuffering, EResizeMode ResizeMode, EMirrorMode MirrorMode, bool IsLinearColorSpace, int width, int height, byte[] fileName);
+        [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static System.IntPtr GetTakeScreenshotEventFunc();
         [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static System.IntPtr GetRenderEventFunc();
         System.IntPtr CaptureInstance;
 
@@ -198,6 +230,12 @@ public class UnityCapture : MonoBehaviour
             }
         }
 
+        public IEnumerator TakeScreenshot()
+        {
+            yield return new WaitForEndOfFrame();
+            GL.IssuePluginEvent(GetTakeScreenshotEventFunc(), 1);
+        }
+
         public void Close()
         {
             if (CaptureInstance != System.IntPtr.Zero)
@@ -215,7 +253,7 @@ public class UnityCapture : MonoBehaviour
         /// <param name="DoubleBuffering"></param>
         /// <param name="ResizeMode"></param>
         /// <param name="MirrorMode"></param>
-        public void SetTexture(Texture Source, int Timeout = 1000, bool DoubleBuffering = false, EResizeMode ResizeMode = EResizeMode.Disabled, EMirrorMode MirrorMode = EMirrorMode.Disabled)
+        public void SetTexture(Texture Source, int Timeout = 1000, bool DoubleBuffering = false, EResizeMode ResizeMode = EResizeMode.Disabled, EMirrorMode MirrorMode = EMirrorMode.Disabled, string fileName = null)
         {
             if (CaptureInstance != System.IntPtr.Zero)
             {
@@ -223,7 +261,15 @@ public class UnityCapture : MonoBehaviour
                 {
                     _cachedTexturePtr = Source.GetNativeTexturePtr(); // On some configs, GetNativeTexPtr is slow (on a low end pc => 8.59ms/call !)
                 }
-                SetTextureFromUnity(CaptureInstance, _cachedTexturePtr, Timeout, DoubleBuffering, ResizeMode, MirrorMode, QualitySettings.activeColorSpace == ColorSpace.Linear, Source.width, Source.height);
+                if (fileName == null)
+                {
+                    SetTextureFromUnity(CaptureInstance, _cachedTexturePtr, Timeout, DoubleBuffering, ResizeMode, MirrorMode, QualitySettings.activeColorSpace == ColorSpace.Linear, Source.width, Source.height);
+                }
+                else
+                {
+                    byte[] bytes = System.Text.Encoding.Unicode.GetBytes(fileName);
+                    PrepareScreenshot(CaptureInstance, _cachedTexturePtr, Timeout, DoubleBuffering, ResizeMode, MirrorMode, QualitySettings.activeColorSpace == ColorSpace.Linear, Source.width, Source.height, bytes);
+                }
             }
         }
 

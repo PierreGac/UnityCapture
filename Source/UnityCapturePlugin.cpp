@@ -23,9 +23,11 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 
+#include "png.h"
 #include "shared.inl"
 #include <chrono>
 #include <string>
+#include <algorithm>
 #include "IUnityGraphics.h"
 
 enum
@@ -44,7 +46,9 @@ enum
 
 #include <d3d11.h>
 //#include <d3d12.h>
-#include <gl/gl.h>
+#include <glew.h>
+
+#pragma comment(lib, "glew32.lib")
 
 static int g_GraphicsDeviceType = -1;
 static ID3D11Device* g_D3D11GraphicsDevice = 0;
@@ -58,7 +62,11 @@ struct UnityCaptureInstance
 	int Width, Height;
 	SharedImageMemory::EFormat EFormat;
 
+	void* cachedData_DIRECTSHOW = NULL;
+	void* cachedData_SCREENSHOT = NULL;
+
 	// DirectX11 stuff
+	DXGI_FORMAT d3Format;
 	ID3D11Texture2D* d3dtex;
 	ID3D11DeviceContext* ctx;
 	ID3D11Texture2D* Textures[2];
@@ -71,9 +79,8 @@ struct UnityCaptureInstance
 	SharedImageMemory::EMirrorMode MirrorMode;
 	int Timeout;
 
-	// Open GL stuff
-	unsigned long gl_dataSize;
-	unsigned char* gl_dataPtr;
+	// Screenshot stuff
+	const wchar_t* ss_fileName = NULL;
 
 	int lastResult = RET_SUCCESS;
 
@@ -94,10 +101,15 @@ struct UnityCaptureInstance
 			Textures[1]->Release();
 			Textures[1] = NULL;
 		}
-		if (gl_dataPtr)
+		if (cachedData_DIRECTSHOW)
 		{
-			delete gl_dataPtr;
-			gl_dataPtr = NULL;
+			free(cachedData_DIRECTSHOW); /*alloc 1*/
+			cachedData_DIRECTSHOW = NULL; /*alloc 1*/
+		}
+		if (cachedData_SCREENSHOT)
+		{
+			free(cachedData_SCREENSHOT); /*alloc 2*/
+			cachedData_SCREENSHOT = NULL; /*alloc 2*/
 		}
 	}
 };
@@ -129,12 +141,6 @@ extern "C" __declspec(dllexport) void SetTextureFromUnity(UnityCaptureInstance* 
 		c->MirrorMode = MirrorMode;
 		c->ResizeMode = ResizeMode;
 		c->Timeout = Timeout;
-		if (g_GraphicsDeviceType == kUnityGfxRendererOpenGLCore || g_GraphicsDeviceType == kUnityGfxRendererOpenGL || g_GraphicsDeviceType == kUnityGfxRendererOpenGLES30)
-		{
-			c->gl_dataSize = width * height * 4;
-			c->gl_dataPtr = new unsigned char[c->gl_dataSize];
-			c->EFormat = SharedImageMemory::FORMAT_UINT8;
-		}
 		if (g_GraphicsDeviceType == kUnityGfxRendererD3D11)
 		{
 			c->ctx = NULL;
@@ -158,6 +164,15 @@ extern "C" __declspec(dllexport) void SetTextureFromUnity(UnityCaptureInstance* 
 			textureDesc.MipLevels = desc.MipLevels;
 			textureDesc.ArraySize = 1;
 			textureDesc.Format = desc.Format;
+			c->d3Format = desc.Format;
+			if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || desc.Format == DXGI_FORMAT_R8G8B8A8_UINT || desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS)
+			{
+				c->EFormat = SharedImageMemory::FORMAT_UINT8;
+			}
+			else if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS)
+			{
+				c->EFormat = (IsLinearColorSpace ? SharedImageMemory::FORMAT_FP16_LINEAR : SharedImageMemory::FORMAT_FP16_GAMMA);
+			}
 			textureDesc.SampleDesc.Count = 1;
 			textureDesc.SampleDesc.Quality = 0;
 			textureDesc.Usage = D3D11_USAGE_STAGING;
@@ -185,6 +200,15 @@ extern "C" __declspec(dllexport) void SetTextureFromUnity(UnityCaptureInstance* 
 	}
 }
 
+extern "C" __declspec(dllexport) void PrepareScreenshot(UnityCaptureInstance* c, void* textureHandle, int Timeout, bool UseDoubleBuffering, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, bool IsLinearColorSpace, int width, int height, const wchar_t* fileName)
+{
+	SetTextureFromUnity(c, textureHandle, Timeout, UseDoubleBuffering, ResizeMode, MirrorMode, IsLinearColorSpace, width, height);
+	if (g_captureInstance)
+	{
+		g_captureInstance->ss_fileName = fileName;
+	}
+}
+
 extern "C" __declspec(dllexport) int GetLastResult()
 {
 	return g_captureInstance->lastResult;
@@ -194,6 +218,27 @@ static bool isOpenGL()
 {
 	return g_GraphicsDeviceType == kUnityGfxRendererOpenGL || g_GraphicsDeviceType == kUnityGfxRendererOpenGLCore;
 }
+
+static void Convert16To8_OpenGL(unsigned short* inputPtr, int height, int width, unsigned char* destPtr, int dataRowPitch)
+{
+	int destRowPitch = width * 8;
+	int index = height - 1;
+	int subIndex = 0;
+	for (int i = 0; i < height; i++)
+	{
+		unsigned short* row = (unsigned short*)inputPtr + i * dataRowPitch;
+		subIndex = 0;
+		for (int j = 0; j < dataRowPitch; j++)
+		{
+			destPtr[index * destRowPitch + subIndex] = (unsigned char)(row[j] >> 8 & 255);
+			subIndex++;
+			destPtr[index * destRowPitch + subIndex] = (unsigned char)(row[j] & 255);
+			subIndex++;
+		}
+		index--;
+	}
+}
+
 
 // This method will setup the sender
 static bool PreRenderEvent()
@@ -213,11 +258,6 @@ static bool PreRenderEvent()
 	if (result && !g_captureInstance->TextureHandle)
 	{
 		g_captureInstance->lastResult = RET_ERROR_TEXTUREHANDLE;
-		result = false;
-	}
-	if (result && isOpenGL() && !g_captureInstance->gl_dataPtr)
-	{
-		g_captureInstance->lastResult = RET_ERROR_READTEXTUREDATA;
 		result = false;
 	}
 	if (result && g_GraphicsDeviceType == kUnityGfxRendererD3D11)
@@ -270,6 +310,7 @@ static void UNITY_INTERFACE_API OnRenderEvent_D3D11(int eventID)
 		return;
 	}
 
+	//memcpy(m_pSharedBuf->data, buffer, DataSize);
 	//Push the captured data to the direct show filter
 	SharedImageMemory::ESendResult res = g_captureInstance->Sender->Send(desc.Width, desc.Height, mapResource.RowPitch / (g_captureInstance->EFormat == SharedImageMemory::FORMAT_UINT8 ? 4 : 8), mapResource.RowPitch * desc.Height, g_captureInstance->EFormat, g_captureInstance->ResizeMode, g_captureInstance->MirrorMode, g_captureInstance->Timeout, (const unsigned char*)mapResource.pData);
 
@@ -301,7 +342,7 @@ static void UNITY_INTERFACE_API OnRenderEvent_OpenGL(int eventID)
 	}
 
 	// Gets the GLtex from the texture handle
-	GLuint gltex = (GLuint)(size_t)(g_captureInstance->TextureHandle);
+	GLuint gltex = (GLuint)g_captureInstance->TextureHandle;
 	int error = GL_NO_ERROR;
 	// Bind the texture to the GL_TEXTURE_2D
 	glBindTexture(GL_TEXTURE_2D, gltex);
@@ -312,15 +353,35 @@ static void UNITY_INTERFACE_API OnRenderEvent_OpenGL(int eventID)
 		return;
 	}
 
+	GLint format;
+	glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
+	error = glGetError();
+	if (error != GL_NO_ERROR)
+	{
+		g_captureInstance->lastResult = RET_ERROR_TEXTUREFORMAT;
+		return;
+	}
+
+	int rowPitch = g_captureInstance->Width * 4;
+	g_captureInstance->EFormat = SharedImageMemory::FORMAT_UINT8;
+
+	// I do not know how to handle Linear/gamma 16bit images
+
 	// TODO : Check HDR, Add double buffering, Check Linear space, Check for the resize mode
 	/* HDR:
 		- HDR or not, it seems that GL_RGBA will works in any cases
 	   COLOR SPACE:
-		- Gamma or Liear => RGBA still works
+		- Gamma or Linear => RGBA still works
+
+		I am unable to setup directshow to accept 16bit openGL...
 	*/
 
 	// Gets the texture buffer for OpenGL ES, use glReadPixels
-	glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, g_captureInstance->gl_dataPtr); // If the format is RGBA8, then RGBA still works
+	if (!g_captureInstance->cachedData_DIRECTSHOW)
+	{
+		g_captureInstance->cachedData_DIRECTSHOW = malloc(sizeof(unsigned char) * g_captureInstance->Height * rowPitch); /*alloc 1*/
+	}
+	glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, g_captureInstance->cachedData_DIRECTSHOW);
 	error = glGetError();
 	if (error != GL_NO_ERROR)
 	{
@@ -330,8 +391,9 @@ static void UNITY_INTERFACE_API OnRenderEvent_OpenGL(int eventID)
 
 	// Send the texture to the DirectShow device
 	SharedImageMemory::ESendResult res = g_captureInstance->Sender->Send(g_captureInstance->Width, g_captureInstance->Height,
-		g_captureInstance->Width, g_captureInstance->gl_dataSize, g_captureInstance->EFormat, g_captureInstance->ResizeMode,
-		g_captureInstance->MirrorMode, g_captureInstance->Timeout, (const unsigned char*)g_captureInstance->gl_dataPtr);
+		g_captureInstance->Width,
+		rowPitch * g_captureInstance->Height, g_captureInstance->EFormat, g_captureInstance->ResizeMode,
+		g_captureInstance->MirrorMode, g_captureInstance->Timeout, (const unsigned char*)g_captureInstance->cachedData_DIRECTSHOW);
 
 	switch (res)
 	{
@@ -367,6 +429,263 @@ extern "C" UnityRenderingEvent UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API GetRen
 	return OnRenderEvent_Void;
 }
 
+
+// SCREENSHOT SECTION
+
+
+static void WriteToPNG(void* data, SharedImageMemory::EFormat format, int dataRowPitch/*This is the row pitch gathered fro the original data type. This is mainly for D3D11*/)
+{
+	FILE *file;
+	_wfopen_s(&file, g_captureInstance->ss_fileName, L"wb");
+	if (!file)
+	{
+		return;
+	}
+
+	png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!png_ptr)
+	{
+		return;
+	}
+
+	png_infop info_ptr = png_create_info_struct(png_ptr);
+	if (!info_ptr)
+	{
+		return;
+	}
+
+	if (setjmp(png_jmpbuf(png_ptr)))
+	{
+		return;
+	}
+
+	png_init_io(png_ptr, file);
+	if (setjmp(png_jmpbuf(png_ptr)))
+	{
+		return;
+	}
+
+	int bit_depth = format == SharedImageMemory::FORMAT_UINT8 ? 8 : 16;
+	int transform = PNG_TRANSFORM_IDENTITY;
+
+
+
+	png_set_IHDR(png_ptr, info_ptr, g_captureInstance->Width, g_captureInstance->Height,
+		bit_depth, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+		PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+	if (setjmp(png_jmpbuf(png_ptr)))
+	{
+		return;
+	}
+	png_init_io(png_ptr, file);
+
+	unsigned char** row_pointers = NULL;
+	unsigned char* convertedData = NULL;
+	int numRows = g_captureInstance->Height;
+
+	if (g_GraphicsDeviceType == kUnityGfxRendererD3D11)
+	{
+		int bpp = 32;
+		if (bit_depth == 16)
+		{
+			bpp = 64; // For 16bits textures, the PNG bpp is 64
+		}
+		int rowBytes = (uint64_t(g_captureInstance->Width) * bpp + 7u) / 8u; // bytes per row
+		uint64_t numBytes = rowBytes * g_captureInstance->Height; // total byte count
+
+		row_pointers = (unsigned char**)malloc(sizeof(unsigned char*) * numRows); /*alloc 3*/
+		//unsigned char *sptr = (unsigned char*)data;
+		int msize = std::min<int>(rowBytes, dataRowPitch);
+
+		int index = numRows - 1;
+
+		for (int i = 0; i < numRows; ++i)
+		{
+			row_pointers[index] = (unsigned char*)malloc(sizeof(unsigned char) * rowBytes); /*alloc 4*/
+			memcpy_s(row_pointers[index], rowBytes, (unsigned char*)data + dataRowPitch * i, msize);
+			index--;
+			//sptr += dataRowPitch;
+		}
+	}
+	else
+	{
+		row_pointers = (unsigned char**)malloc(sizeof(unsigned char*) * numRows); /*alloc 3*/
+
+		if (bit_depth == 8)
+		{
+			int index = 0;
+			for (int i = numRows - 1; i >= 0; --i)
+			{
+				row_pointers[index] = (unsigned char *)data + i * dataRowPitch;
+				index++;
+			}
+		}
+		else
+		{
+			// We need to convert the unsigned short data into a correct unsigned char array
+			convertedData = (unsigned char*)malloc(sizeof(unsigned char) * g_captureInstance->Width * g_captureInstance->Height * 4 * 2); /*alloc 5*/
+			Convert16To8_OpenGL((unsigned short*)data, g_captureInstance->Height, g_captureInstance->Width, convertedData, dataRowPitch);
+
+			int chunkSize = g_captureInstance->Width * 8;
+
+			for (int i = 0; i < g_captureInstance->Height; i++)
+			{
+				row_pointers[i] = convertedData + i * (g_captureInstance->Width * 8);
+			}
+		}
+	}
+
+	png_set_rows(png_ptr, info_ptr, row_pointers);
+	png_write_png(png_ptr, info_ptr, transform, NULL);
+
+	fclose(file);
+
+	if (g_GraphicsDeviceType == kUnityGfxRendererD3D11)
+	{
+		for (int i = 0; i < 1; ++i)
+		{
+			free(row_pointers[i]); /*alloc 4*/
+			row_pointers[i] = NULL; /*alloc 4*/
+		}
+	}
+
+	if (convertedData)
+	{
+		free(convertedData); /*alloc 5*/
+		convertedData = NULL; /*alloc 5*/
+	}
+	if (row_pointers)
+	{
+		free(row_pointers); /*alloc 3*/
+		row_pointers = NULL; /*alloc 3*/
+	}
+	if (setjmp(png_jmpbuf(png_ptr)))
+	{
+		return;
+	}
+
+}
+
+static void UNITY_INTERFACE_API OnTakeScreenshotEvent_D3D11(int eventID)
+{
+	D3D11_TEXTURE2D_DESC desc = { 0 };
+	g_captureInstance->d3dtex->GetDesc(&desc);
+	if (!desc.Width || !desc.Height)
+	{
+		g_captureInstance->lastResult = RET_ERROR_READTEXTURE;
+		return;
+	}
+
+	ID3D11Texture2D* WriteTexture = g_captureInstance->Textures[0];
+	ID3D11Texture2D* ReadTexture = g_captureInstance->Textures[0];
+
+	//Copy render texture to texture with CPU access and map the image data to RAM
+	g_captureInstance->ctx->CopyResource(WriteTexture, g_captureInstance->d3dtex);
+	D3D11_MAPPED_SUBRESOURCE mapResource;
+	if (FAILED(g_captureInstance->ctx->Map(ReadTexture, 0, D3D11_MAP_READ, 0, &mapResource)))
+	{
+		g_captureInstance->lastResult = RET_ERROR_READTEXTURE;
+		return;
+	}
+	WriteToPNG(mapResource.pData, g_captureInstance->EFormat, mapResource.RowPitch);
+
+	g_captureInstance->ctx->Unmap(ReadTexture, 0);
+
+	g_captureInstance->lastResult = RET_SUCCESS;
+}
+
+/// Saves an OpenGL buffer to a png
+/// Works well with 8bit depth [Gamma and Linear]
+/// Have some issues with the 16bit depth with Linear mode (it's darker than it should be).. This needs investigations
+static void UNITY_INTERFACE_API OnTakeScreenshotEvent_OpenGL(int eventID)
+{
+	GLuint gltex = (GLuint)(size_t)(g_captureInstance->TextureHandle);
+	int error = GL_NO_ERROR;
+	glBindTexture(GL_TEXTURE_2D, gltex);
+	error = glGetError();
+	if (error != GL_NO_ERROR)
+	{
+		g_captureInstance->lastResult = RET_ERROR_READTEXTURE;
+		return;
+	}
+
+	GLint format;
+	glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
+	error = glGetError();
+	if (error != GL_NO_ERROR)
+	{
+		g_captureInstance->lastResult = RET_ERROR_TEXTUREFORMAT;
+		return;
+	}
+
+	int rowPitch = g_captureInstance->Width * 4;
+
+	if (format == GL_RGBA16F_EXT || format == GL_RGBA16 || format == GL_RGBA16F)
+	{
+		g_captureInstance->EFormat = SharedImageMemory::FORMAT_FP16_GAMMA;
+		if (!g_captureInstance->cachedData_SCREENSHOT)
+		{
+			g_captureInstance->cachedData_SCREENSHOT = malloc(sizeof(unsigned short) * rowPitch * g_captureInstance->Height * 2); /*alloc_2*/
+		}
+		glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_SHORT, g_captureInstance->cachedData_SCREENSHOT);
+		error = glGetError();
+		if (error != GL_NO_ERROR)
+		{
+			g_captureInstance->lastResult = RET_ERROR_READTEXTUREDATA;
+			return;
+		}
+
+		WriteToPNG(g_captureInstance->cachedData_SCREENSHOT, g_captureInstance->EFormat, rowPitch);
+
+		g_captureInstance->lastResult = RET_SUCCESS;
+	}
+	else
+	{
+		g_captureInstance->EFormat = SharedImageMemory::FORMAT_UINT8;
+		if (!g_captureInstance->cachedData_SCREENSHOT)
+		{
+			g_captureInstance->cachedData_SCREENSHOT = malloc(sizeof(unsigned char) * g_captureInstance->Height * rowPitch); /*alloc 2*/
+		}
+		glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, g_captureInstance->cachedData_SCREENSHOT);
+		error = glGetError();
+		if (error != GL_NO_ERROR)
+		{
+			g_captureInstance->lastResult = RET_ERROR_READTEXTUREDATA;
+			return;
+		}
+
+		// Save the file here
+		WriteToPNG(g_captureInstance->cachedData_SCREENSHOT, g_captureInstance->EFormat, rowPitch);
+
+		g_captureInstance->lastResult = RET_SUCCESS;
+	}
+
+}
+
+static void UNITY_INTERFACE_API OnTakeScreenshotEvent_Void(int eventID)
+{
+	g_captureInstance->lastResult = RET_ERROR_UNSUPPORTEDGRAPHICSDEVICE;
+}
+
+extern "C" UnityRenderingEvent UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API GetTakeScreenshotEventFunc(int eventID)
+{
+	if (g_GraphicsDeviceType == kUnityGfxRendererD3D11)
+	{
+		return OnTakeScreenshotEvent_D3D11;
+	}
+	else if (g_GraphicsDeviceType == kUnityGfxRendererD3D12)
+	{
+		//return OnTakeScreenshotEvent_D3D12;
+	}
+	else if (g_GraphicsDeviceType == kUnityGfxRendererOpenGL || g_GraphicsDeviceType == kUnityGfxRendererOpenGLCore)
+	{
+		return OnTakeScreenshotEvent_OpenGL;
+	}
+	return OnTakeScreenshotEvent_Void;
+}
+
+
 // If exported by a plugin, this function will be called when graphics device is created, destroyed, and before and after it is reset (ie, resolution changed).
 extern "C" void UNITY_INTERFACE_EXPORT UnitySetGraphicsDevice(void* device, int deviceType, int eventType)
 {
@@ -380,6 +699,11 @@ extern "C" void UNITY_INTERFACE_EXPORT UnitySetGraphicsDevice(void* device, int 
 		else if (deviceType == kUnityGfxRendererOpenGLCore || deviceType == kUnityGfxRendererOpenGL)
 		{
 			g_GraphicsDeviceType = deviceType;
+			if (GLEW_OK != glewInit())
+			{
+				// GLEW failed!
+				//exit(1);
+			}
 		}
 		else
 		{
