@@ -141,19 +141,19 @@ public class UnityCapture : MonoBehaviour
     }
 #endif
 
+    // Assuming that the containing directory exists..
     public void TakeScreenshot(string fileName)
     {
-        DirectoryInfo dInfo = new DirectoryInfo(fileName);
-        if (Directory.Exists(dInfo.FullName))
-        {
-            _requestedScreenshotFileName = fileName;
-            _requestScreenshot = true;
-        }
+        _requestedScreenshotFileName = fileName;
+        _requestScreenshot = true;
     }
 
     void OnDestroy()
     {
-        CaptureInterface.Close();
+        if (CaptureInterface != null)
+        {
+            CaptureInterface.Close();
+        }
     }
 
     void OnRenderImage(RenderTexture source, RenderTexture destination)
@@ -165,7 +165,7 @@ public class UnityCapture : MonoBehaviour
             _sourceTexture = source; // Assuming that the source texture reference will be the same...
         }
 
-        if(_requestScreenshot)
+        if (_requestScreenshot)
         {
             CaptureInterface.SetTexture(source, Timeout, DoubleBuffering, ResizeMode, MirrorMode, _requestedScreenshotFileName);
             _requestScreenshot = false;
